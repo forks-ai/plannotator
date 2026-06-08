@@ -730,12 +730,28 @@ if command -v glimpseui >/dev/null 2>&1; then
     glimpse_present=1
 fi
 
-# A wizard needs a real keyboard. Piped installs (curl | bash) still have a
-# terminal at /dev/tty even though stdin is the pipe; CI and scripts do not.
+# A wizard needs a real human at the keyboard. Piped installs (curl | bash)
+# still have a terminal at /dev/tty even though stdin is the pipe; CI and
+# scripts do not. Some automated contexts (docker run -t, devcontainer and
+# provisioner shells) DO expose an openable /dev/tty with nobody behind it —
+# opening /dev/tty succeeds, yet a read would block forever. The per-prompt
+# timeout below (see PROMPT_TIMEOUT / ask_yes_no) handles that: a mis-detected
+# terminal falls through to the safe non-interactive defaults (extras=no,
+# model-invocable=none, glimpse=no) instead of wedging. We deliberately do NOT
+# gate on $CI here — an exported CI var must not silently suppress an explicit
+# --reconfigure or --extras in an otherwise interactive shell.
 can_prompt=0
 if [ "$NON_INTERACTIVE" -eq 0 ] && { : < /dev/tty; } 2>/dev/null; then
     can_prompt=1
 fi
+
+# Bound every interactive read so an unattended-but-open /dev/tty auto-takes
+# the default rather than hanging. Set PLANNOTATOR_PROMPT_TIMEOUT=0 to wait
+# indefinitely (restores the old unbounded behavior); non-numeric falls to 30.
+PROMPT_TIMEOUT="${PLANNOTATOR_PROMPT_TIMEOUT:-30}"
+case "$PROMPT_TIMEOUT" in
+    ''|*[!0-9]*) PROMPT_TIMEOUT=30 ;;
+esac
 
 run_wizard=0
 if [ "$can_prompt" -eq 1 ]; then
@@ -746,11 +762,32 @@ fi
 
 # Ask a y/n question on the terminal. $1 prompt, $2 default (yes/no).
 ask_yes_no() {
-    local prompt="$1" default="$2" answer suffix
+    local prompt="$1" default="$2" answer suffix rc
     suffix="[y/N]"
     [ "$default" = "yes" ] && suffix="[Y/n]"
     printf '%s %s ' "$prompt" "$suffix" > /dev/tty
-    IFS= read -r answer < /dev/tty || answer=""
+    # Bounded read so an unattended-but-open /dev/tty (e.g. docker run -t with
+    # no human) can't hang the install. Distinguish a human pressing Enter
+    # (read succeeds with an empty answer -> use the prompt's $default) from a
+    # timeout/EOF with nobody there (read fails -> use the SAFE "no", never the
+    # default). Otherwise a prompt whose default is "yes" (Glimpse) would
+    # silently install software on an unattended terminal.
+    # Keep the read in a tested context (`|| rc=$?`) so the read itself never
+    # trips `set -e` (active at the top of this script), without relying on the
+    # subtle rule that -e is suppressed inside a function called in a tested
+    # context. ask_yes_no still returns non-zero on timeout/EOF to signal "no
+    # human", so every caller consumes it with `|| wizard_timed_out=1`.
+    rc=0
+    if [ "$PROMPT_TIMEOUT" -gt 0 ]; then
+        IFS= read -r -t "$PROMPT_TIMEOUT" answer < /dev/tty || rc=$?
+    else
+        IFS= read -r answer < /dev/tty || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        printf '\n' > /dev/tty
+        echo "no"
+        return 1
+    fi
     case "$answer" in
         y|Y|yes|YES|Yes) echo "yes" ;;
         n|N|no|NO|No)    echo "no" ;;
@@ -811,6 +848,9 @@ select_skills_checkbox() {
 extras_choice=""
 invocable_choice=""
 glimpse_choice=""
+# Set if any wizard prompt times out / hits EOF (no human answered). A run whose
+# answers are synthetic timeout fallbacks must not be persisted as install-prefs.
+wizard_timed_out=0
 
 if [ "$run_wizard" -eq 1 ]; then
     {
@@ -827,7 +867,7 @@ if [ "$run_wizard" -eq 1 ]; then
         # Flag already answered this question — don't ask and then ignore.
         extras_choice="$EXTRAS_FLAG"
     else
-        extras_choice=$(ask_yes_no "Install the extra skills (compound planning, setup-goal, visual explainer)?" "${saved_extras:-no}")
+        extras_choice=$(ask_yes_no "Install the extra skills (compound planning, setup-goal, visual explainer)?" "${saved_extras:-no}") || wizard_timed_out=1
     fi
     invocable_list="$CORE_SKILL_NAMES"
     if [ "$extras_choice" = "yes" ]; then
@@ -837,7 +877,7 @@ if [ "$run_wizard" -eq 1 ]; then
         # Flag already answered this question — don't ask and then ignore.
         invocable_choice="$MODEL_INVOCABLE_FLAG"
     else
-        want_invocable=$(ask_yes_no "Make any skills callable by the model (instead of user-invoked only)?" "no")
+        want_invocable=$(ask_yes_no "Make any skills callable by the model (instead of user-invoked only)?" "no") || wizard_timed_out=1
         if [ "$want_invocable" = "yes" ]; then
             invocable_choice=$(select_skills_checkbox "$invocable_list" "$saved_invocable")
         else
@@ -851,7 +891,7 @@ if [ "$run_wizard" -eq 1 ]; then
         # Flag already answered this question — don't ask and then ignore.
         glimpse_choice="$GLIMPSE_FLAG"
     else
-        glimpse_choice=$(ask_yes_no "Install Glimpse so Plannotator opens in a native window instead of a browser tab? (npm i -g glimpseui)" "${saved_glimpse:-yes}")
+        glimpse_choice=$(ask_yes_no "Install Glimpse so Plannotator opens in a native window instead of a browser tab? (npm i -g glimpseui)" "${saved_glimpse:-yes}") || wizard_timed_out=1
     fi
 fi
 
@@ -863,9 +903,11 @@ fi
 [ -z "$invocable_choice" ] && invocable_choice="${saved_invocable:-none}"
 [ -z "$glimpse_choice" ] && glimpse_choice="${saved_glimpse:-no}"
 
-# Persist only when the wizard ran or a flag set something — silent re-runs
-# must not clobber saved answers with defaults.
-if [ "$run_wizard" -eq 1 ] || [ -n "$EXTRAS_FLAG" ] || [ -n "$MODEL_INVOCABLE_FLAG" ] || [ -n "$GLIMPSE_FLAG" ]; then
+# Persist only when the wizard ran with real answers, or a flag set something.
+# Silent re-runs must not clobber saved answers with defaults, and a wizard that
+# timed out to synthetic fallbacks (unattended /dev/tty) must not become sticky
+# prefs that suppress the wizard on a later genuine interactive install.
+if [ "$wizard_timed_out" -eq 0 ] && { [ "$run_wizard" -eq 1 ] || [ -n "$EXTRAS_FLAG" ] || [ -n "$MODEL_INVOCABLE_FLAG" ] || [ -n "$GLIMPSE_FLAG" ]; }; then
     mkdir -p "$_config_dir"
     {
         echo "extras=$extras_choice"
@@ -969,19 +1011,33 @@ checkout_failed=0
     # via --version may predate the core/extra layout — skip core skills
     # but keep installing the command files below (matches install.ps1 and
     # install.cmd, which guard each block independently).
+    # Claude Code and Codex consume different skill bodies. Claude Code reads
+    # the apps/skills/claude/* copies, which use dynamic-context injection
+    # (`!`plannotator … $ARGUMENTS``) + allowed-tools so /plannotator-* run the
+    # binary directly with no permission prompt — matching the old slash
+    # commands. Codex (the OpenAI shared-agent path) reads apps/skills/core/*,
+    # whose prose bodies the model follows via its own shell; the `!`…``
+    # injection is a Claude-Code-only extension, so the two are sourced
+    # separately rather than sharing one body.
+    if [ -d "apps/skills/claude" ] && [ -n "$(ls -A apps/skills/claude 2>/dev/null)" ]; then
+        mkdir -p "$CLAUDE_SKILLS_DIR"
+        copy_skill_if_present apps/skills/claude/plannotator-review "$CLAUDE_SKILLS_DIR"
+        copy_skill_if_present apps/skills/claude/plannotator-annotate "$CLAUDE_SKILLS_DIR"
+        copy_skill_if_present apps/skills/claude/plannotator-last "$CLAUDE_SKILLS_DIR"
+        copy_skill_if_present apps/skills/claude/plannotator-archive "$CLAUDE_SKILLS_DIR"
+        echo "Installed Claude Code skills to ${CLAUDE_SKILLS_DIR}/"
+    else
+        echo "Tag ${latest_tag} predates the per-agent skill layout — skipping Claude Code skill install"
+    fi
     if [ -d "apps/skills/core" ] && [ -n "$(ls -A apps/skills/core 2>/dev/null)" ]; then
-        mkdir -p "$CLAUDE_SKILLS_DIR" "$AGENTS_SKILLS_DIR"
-        copy_skill_if_present apps/skills/core/plannotator-review "$CLAUDE_SKILLS_DIR"
-        copy_skill_if_present apps/skills/core/plannotator-annotate "$CLAUDE_SKILLS_DIR"
-        copy_skill_if_present apps/skills/core/plannotator-last "$CLAUDE_SKILLS_DIR"
-        copy_skill_if_present apps/skills/core/plannotator-archive "$CLAUDE_SKILLS_DIR"
+        mkdir -p "$AGENTS_SKILLS_DIR"
         copy_skill_if_present apps/skills/core/plannotator-review "$AGENTS_SKILLS_DIR"
         copy_skill_if_present apps/skills/core/plannotator-annotate "$AGENTS_SKILLS_DIR"
         copy_skill_if_present apps/skills/core/plannotator-last "$AGENTS_SKILLS_DIR"
         copy_skill_if_present apps/skills/core/plannotator-archive "$AGENTS_SKILLS_DIR"
-        echo "Installed core skills to ${CLAUDE_SKILLS_DIR}/ and shared agent skills to ${AGENTS_SKILLS_DIR}/"
+        echo "Installed shared agent skills to ${AGENTS_SKILLS_DIR}/"
     else
-        echo "Tag ${latest_tag} predates the core/extra skill layout — skipping core skill install"
+        echo "Tag ${latest_tag} predates the core/extra skill layout — skipping shared agent skill install"
     fi
 
     # OpenCode slash command stubs (the plugin intercepts execution) —
