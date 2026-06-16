@@ -1,10 +1,10 @@
 /**
  * Annotate Server
  *
- * Provides a server for annotating arbitrary markdown files.
+ * Provides a server for annotating arbitrary files, URLs, and folders.
  * Follows the same patterns as the review server but serves
- * markdown content via /api/plan so the plan editor UI can
- * render it without modifications.
+ * annotation-session content via /api/plan so the plan editor UI can
+ * render it without separate app bundles.
  *
  * Environment variables:
  *   PLANNOTATOR_REMOTE - Set to "1"/"true" for remote, "0"/"false" for local
@@ -20,10 +20,12 @@ import { warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash, deleteDraft } from "./draft";
 import { createExternalAnnotationHandler } from "./external-annotations";
 import { saveConfig, detectGitUser, getServerConfig } from "./config";
-import { dirname, resolve as resolvePath } from "path";
+import { dirname, isAbsolute, relative, resolve as resolvePath } from "path";
 import { isWSL } from "./browser";
 import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
 import type { AIEndpoints } from "@plannotator/ai";
+import { createHtmlAssetRegistry } from "./html-assets";
+import { applyAnnotateDocSessionParams } from "./annotate-doc-url";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -33,7 +35,7 @@ export { handleServerReady as handleAnnotateServerReady } from "./shared-handler
 // --- Types ---
 
 export interface AnnotateServerOptions {
-  /** Markdown content of the file to annotate */
+  /** Markdown content of the file to annotate. Empty when rendering raw HTML. */
   markdown: string;
   /** Original file path (for display purposes) */
   filePath: string;
@@ -65,9 +67,9 @@ export interface AnnotateServerOptions {
   sourceConverted?: boolean;
   /** Enable review-gate UX: adds an Approve button alongside Close/Send Annotations */
   gate?: boolean;
-  /** Raw HTML content for direct iframe rendering (--render-html mode) */
+  /** Raw HTML content for direct iframe rendering. */
   rawHtml?: string;
-  /** Render HTML as-is in an iframe instead of converting to markdown */
+  /** Render HTML as-is in an iframe. */
   renderHtml?: boolean;
   /** Session-level force-markdown preference (`--markdown`). Exposed in /api/plan so the
    *  frontend appends `&convert=1` when navigating folder/linked HTML files. */
@@ -146,6 +148,41 @@ export async function startAnnotateServer(
   const draftKey = contentHash(draftSource);
   const externalAnnotations = createExternalAnnotationHandler("plan");
   const aiRuntime = await createAIRuntime();
+  const htmlAssets = createHtmlAssetRegistry();
+
+  async function loadShareHtml(pathParam: string | null): Promise<Response> {
+    if (/^https?:\/\//i.test(filePath)) {
+      return Response.json({ error: "Raw HTML sharing is unavailable for URL annotations" }, { status: 400 });
+    }
+
+    const sourcePath = resolvePath(filePath);
+    const requestedPath = pathParam ? resolvePath(pathParam) : sourcePath;
+    if (!/\.html?$/i.test(requestedPath)) {
+      return Response.json({ error: "Share HTML is only available for HTML documents" }, { status: 400 });
+    }
+    if (!isAllowedHtmlSharePath(requestedPath)) {
+      return Response.json({ error: "Access denied" }, { status: 403 });
+    }
+
+    try {
+      const html = renderHtml && rawHtml && requestedPath === sourcePath
+        ? rawHtml
+        : await Bun.file(requestedPath).text();
+      return Response.json({ shareHtml: htmlAssets.inlineHtml(html, requestedPath) });
+    } catch {
+      return Response.json({ error: "Failed to prepare share HTML" }, { status: 500 });
+    }
+  }
+
+  function isAllowedHtmlSharePath(targetPath: string): boolean {
+    const roots = new Set<string>([process.cwd()]);
+    if (folderPath) roots.add(folderPath);
+    if (!/^https?:\/\//i.test(filePath)) roots.add(dirname(filePath));
+    for (const root of roots) {
+      if (isWithinDirectory(targetPath, root)) return true;
+    }
+    return false;
+  }
 
   // Detect repo info (cached for this session)
   const repoInfo = await getRepoInfo();
@@ -187,6 +224,7 @@ export async function startAnnotateServer(
 
           // API: Get plan content (reuse /api/plan so the plan editor UI works)
           if (url.pathname === "/api/plan" && req.method === "GET") {
+            const displayRawHtml = renderHtml && rawHtml ? htmlAssets.rewriteHtml(rawHtml, filePath) : undefined;
             return Response.json({
               plan: markdown,
               origin,
@@ -195,8 +233,8 @@ export async function startAnnotateServer(
               sourceInfo,
               sourceConverted: sourceConverted ?? false,
               gate,
-              renderAs: renderHtml && rawHtml ? 'html' as const : 'markdown' as const,
-              ...(renderHtml && rawHtml ? { rawHtml } : {}),
+              renderAs: displayRawHtml ? 'html' as const : 'markdown' as const,
+              ...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
               convertHtml,
               sharingEnabled,
               shareBaseUrl,
@@ -207,6 +245,10 @@ export async function startAnnotateServer(
               serverConfig: getServerConfig(gitUser),
               ...(recentMessages ? { recentMessages } : {}),
             });
+          }
+
+          if (url.pathname === "/api/share-html" && req.method === "GET") {
+            return loadShareHtml(url.searchParams.get("path"));
           }
 
           // API: Update user config (write-back to ~/.plannotator/config.json)
@@ -230,16 +272,19 @@ export async function startAnnotateServer(
             return handleImage(req);
           }
 
-          // API: Serve a linked markdown document
-          // Inject source file's directory as base for relative path resolution.
-          // Skip base injection for URL annotations — there's no local directory to resolve against.
+          const htmlAssetResponse = await htmlAssets.handle(req, url);
+          if (htmlAssetResponse) {
+            return htmlAssetResponse;
+          }
+
+          // API: Serve a linked markdown document. The annotate session owns the
+          // source-file base and --markdown preference, so enforce both here.
           if (url.pathname === "/api/doc" && req.method === "GET") {
-            if (!url.searchParams.has("base") && !/^https?:\/\//i.test(filePath)) {
-              const docUrl = new URL(req.url);
-              docUrl.searchParams.set("base", dirname(filePath));
-              return handleDoc(new Request(docUrl.toString()));
-            }
-            return handleDoc(req);
+            const docUrl = applyAnnotateDocSessionParams(req.url, filePath, convertHtml);
+            const docReq = docUrl.changed ? new Request(docUrl.url) : req;
+            return handleDoc(docReq, {
+              rewriteHtml: htmlAssets.rewriteHtml,
+            });
           }
 
           // API: Batch existence check for code-file paths the renderer detected
@@ -401,4 +446,11 @@ export async function startAnnotateServer(
       server.stop();
     },
   };
+}
+
+function isWithinDirectory(filePath: string, root: string): boolean {
+  const resolved = resolvePath(filePath);
+  const resolvedRoot = resolvePath(root);
+  const rel = relative(resolvedRoot, resolved);
+  return rel === "" || (!!rel && !rel.startsWith("..") && !isAbsolute(rel));
 }

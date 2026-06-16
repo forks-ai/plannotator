@@ -201,10 +201,10 @@ export async function handleAnnotateCommand(
   // --json is accepted silently (OpenCode writes to session, not stdout).
   // parseAnnotateArgs strips leading @ on filePath (reference-mode convention).
   // `rawFilePath` preserves it for the scoped-package markdown fallback.
-  const { filePath, rawFilePath, gate, renderHtml: renderHtmlFlag, noJina } = parseAnnotateArgs(rawArgs);
+  const { filePath, rawFilePath, gate, renderMarkdown: renderMarkdownFlag, noJina } = parseAnnotateArgs(rawArgs);
 
   if (!filePath) {
-    client.app.log({ level: "error", message: "Usage: /plannotator-annotate <file.md | file.html | https://... | folder/> [--no-jina] [--gate] [--json]" });
+    client.app.log({ level: "error", message: "Usage: /plannotator-annotate <file.md | file.html | https://... | folder/> [--markdown] [--no-jina] [--gate] [--json]" });
     return;
   }
 
@@ -254,19 +254,15 @@ export async function handleAnnotateCommand(
       annotateMode = "annotate-folder";
       client.app.log({ level: "info", message: `Opening annotation UI for folder ${resolvedArg}...` });
     } else if (/\.html?$/i.test(resolvedArg)) {
-      let fileSize: number;
       try {
-        fileSize = statSync(resolvedArg).size;
+        statSync(resolvedArg);
       } catch {
         client.app.log({ level: "error", message: `File not found: ${filePath}` });
         return;
       }
-      if (fileSize > 10 * 1024 * 1024) {
-        client.app.log({ level: "error", message: `File too large (${Math.round(fileSize / 1024 / 1024)}MB, max 10MB)` });
-        return;
-      }
       const html = await Bun.file(resolvedArg).text();
-      if (renderHtmlFlag) {
+      const renderHtmlForFile = !renderMarkdownFlag;
+      if (renderHtmlForFile) {
         rawHtml = html;
         markdown = "";
       } else {
@@ -275,7 +271,7 @@ export async function handleAnnotateCommand(
       }
       absolutePath = resolvedArg;
       sourceInfo = path.basename(resolvedArg);
-      client.app.log({ level: "info", message: `${renderHtmlFlag ? "Raw HTML" : "Converted"}: ${absolutePath}` });
+      client.app.log({ level: "info", message: `${renderHtmlForFile ? "Raw HTML" : "Converted"}: ${absolutePath}` });
     } else {
       // Markdown file annotation
       client.app.log({ level: "info", message: `Opening annotation UI for ${filePath}...` });
@@ -312,7 +308,8 @@ export async function handleAnnotateCommand(
     sourceInfo,
     sourceConverted,
     rawHtml,
-    renderHtml: renderHtmlFlag,
+    renderHtml: !!rawHtml,
+    convertHtml: renderMarkdownFlag,
     sharingEnabled: await getSharingEnabled(),
     shareBaseUrl: getShareBaseUrl(),
     pasteApiUrl: getPasteApiUrl(),

@@ -142,6 +142,9 @@ const createEmptyMessageState = (message: PickerMessage): MessageAnnotationState
   linkedDocSession: {
     root: {
       markdown: message.text,
+      renderAs: 'markdown',
+      rawHtml: '',
+      shareHtml: '',
       annotations: [],
       selectedAnnotationId: null,
       globalAttachments: [],
@@ -166,6 +169,9 @@ const normalizeMessageState = (
       // Keep it as the source of truth so transient UI state cannot cache an
       // empty markdown value for a message.
       markdown: message.text,
+      renderAs: state.linkedDocSession.root.renderAs ?? 'markdown',
+      rawHtml: state.linkedDocSession.root.rawHtml ?? '',
+      shareHtml: state.linkedDocSession.root.shareHtml ?? '',
     },
     docs: new Map(state.linkedDocSession.docs),
   },
@@ -266,6 +272,7 @@ const App: React.FC = () => {
   // card-chromed markdown column. Branch the document-area containers on this.
   const isHtmlSurface = renderAs === 'html';
   const [rawHtml, setRawHtml] = useState('');
+  const [shareHtml, setShareHtml] = useState('');
   // Session-level force-markdown preference (`--markdown`). When set, folder/linked HTML
   // files are converted instead of rendered raw — threaded into /api/doc as &convert=1.
   const [convertHtml, setConvertHtml] = useState(false);
@@ -288,6 +295,7 @@ const App: React.FC = () => {
   const [projectRoot, setProjectRoot] = useState<string | null>(null);
   const [wideModeType, setWideModeType] = useState<WideModeType | null>(null);
   const wideModeSnapshotRef = useRef<WideModeLayoutSnapshot | null>(null);
+  const initialSidebarPreferenceAppliedRef = useRef(false);
   const lastAppliedTocEnabledRef = useRef(uiPrefs.tocEnabled);
   const goalSetupMode = goalSetupBundle !== null;
 
@@ -330,7 +338,7 @@ const App: React.FC = () => {
   usePrintMode();
 
   // Sidebar (shared TOC + Version Browser)
-  const sidebar = useSidebar(getUIPreferences().tocEnabled);
+  const sidebar = useSidebar(false);
 
   // Resizable panels
   const panelResize = useResizablePanel({
@@ -498,7 +506,7 @@ const App: React.FC = () => {
   const linkedDocHook = useLinkedDoc({
     markdown, annotations, selectedAnnotationId, globalAttachments,
     setMarkdown, setAnnotations, setSelectedAnnotationId, setGlobalAttachments,
-    renderAs, rawHtml, setRenderAs, setRawHtml,
+    renderAs, rawHtml, shareHtml, setRenderAs, setRawHtml, setShareHtml,
     viewerRef, sidebar: linkedDocSidebar, sourceFilePath, sourceConverted,
   });
 
@@ -900,6 +908,24 @@ const App: React.FC = () => {
   // Hide share entry points once they exist so we do not silently drop feedback.
   const canShareCurrentSession = sharingEnabled && codeAnnotations.length === 0;
 
+  const resolveRawHtmlForShare = useCallback(async (): Promise<string | null> => {
+    if (renderAs !== 'html' || !rawHtml) return null;
+    if (shareHtml) return shareHtml;
+    if (!isApiMode) return rawHtml;
+
+    const params = new URLSearchParams();
+    const activePath = linkedDocHook.filepath ?? sourceFilePath;
+    if (activePath) params.set('path', activePath);
+    const query = params.toString();
+    const res = await fetch(`/api/share-html${query ? `?${query}` : ''}`);
+    const data = (await res.json().catch(() => ({}))) as { shareHtml?: unknown; error?: string };
+    if (!res.ok || data.error || typeof data.shareHtml !== 'string') {
+      throw new Error(data.error || 'Failed to prepare HTML for sharing');
+    }
+    setShareHtml(data.shareHtml);
+    return data.shareHtml;
+  }, [isApiMode, linkedDocHook.filepath, rawHtml, renderAs, shareHtml, sourceFilePath]);
+
   // URL-based sharing
   const {
     isSharedSession,
@@ -929,10 +955,47 @@ const App: React.FC = () => {
     },
     shareBaseUrl,
     pasteApiUrl,
-    rawHtml,
+    renderAs === 'html' ? rawHtml : undefined,
+    resolveRawHtmlForShare,
     setRawHtml,
+    setShareHtml,
     setRenderAs,
   );
+
+  useEffect(() => {
+    if (initialSidebarPreferenceAppliedRef.current) return;
+    if (isLoading || isLoadingShared) return;
+    if (wideModeType !== null) return;
+
+    initialSidebarPreferenceAppliedRef.current = true;
+    if (archive.archiveMode || goalSetupMode || annotateSource === 'folder') return;
+    if (renderAs === 'html') {
+      sidebar.close();
+      return;
+    }
+    if (uiPrefs.tocEnabled && hasTocEntries) {
+      sidebar.open('toc');
+    }
+  }, [
+    annotateSource,
+    archive.archiveMode,
+    goalSetupMode,
+    hasTocEntries,
+    isLoading,
+    isLoadingShared,
+    renderAs,
+    sidebar.close,
+    sidebar.open,
+    uiPrefs.tocEnabled,
+    wideModeType,
+  ]);
+
+  const ensureShareLink = useCallback(async (): Promise<string | null> => {
+    const existing = shortShareUrl || shareUrl;
+    if (existing) return existing;
+    if (!canShareCurrentSession) return null;
+    return await generateShortUrl();
+  }, [canShareCurrentSession, generateShortUrl, shareUrl, shortShareUrl]);
 
   // useLayoutEffect + synchronous getBoundingClientRect so the initial
   // bucket is set before the browser paints. Otherwise narrow viewports
@@ -1026,7 +1089,7 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; sourceInfo?: string; sourceConverted?: boolean; gate?: boolean; renderAs?: 'html' | 'markdown'; rawHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string }; recentMessages?: PickerMessage[] }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; sourceInfo?: string; sourceConverted?: boolean; gate?: boolean; renderAs?: 'html' | 'markdown'; rawHtml?: string; shareHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; archivePlans?: ArchivedPlan[]; projectRoot?: string; isWSL?: boolean; serverConfig?: { displayName?: string; gitUser?: string }; recentMessages?: PickerMessage[] }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // Session-level force-markdown preference (--markdown); threaded into folder/linked
@@ -1049,6 +1112,7 @@ const App: React.FC = () => {
         } else if (data.renderAs === 'html' && data.rawHtml) {
           setRenderAs('html');
           setRawHtml(data.rawHtml);
+          setShareHtml(data.shareHtml ?? '');
           setMarkdown('');
         } else if (data.mode === 'annotate-folder') {
           // Folder annotation mode: clear demo content, let user pick a file
@@ -1910,10 +1974,15 @@ const App: React.FC = () => {
   const callbackConfig = React.useMemo(() => getCallbackConfig(), []);
 
   const callCallback = React.useCallback(async (action: CallbackAction) => {
-    if (!callbackConfig || isSubmitting || (!shareUrl && !shortShareUrl)) return;
+    if (!callbackConfig || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      const result = await executeCallback(action, callbackConfig, shortShareUrl || shareUrl);
+      const callbackShareUrl = await ensureShareLink();
+      if (!callbackShareUrl) {
+        toast.error('Failed to create share link');
+        return;
+      }
+      const result = await executeCallback(action, callbackConfig, callbackShareUrl);
       if (result) {
         if (result.type === 'success') {
           toast.success(result.message);
@@ -1925,7 +1994,7 @@ const App: React.FC = () => {
     } finally {
       setIsSubmitting(false);
     }
-  }, [callbackConfig, isSubmitting, shareUrl, shortShareUrl]);
+  }, [callbackConfig, ensureShareLink, isSubmitting]);
 
   const handleCallbackApprove = React.useCallback(() => callCallback(CallbackAction.Approve), [callCallback]);
   const handleCallbackFeedback = React.useCallback(() => callCallback(CallbackAction.Feedback), [callCallback]);
@@ -2010,8 +2079,13 @@ const App: React.FC = () => {
   };
 
   const handleCopyShareLink = async () => {
-    const url = shortShareUrl || shareUrl;
-    if (!url) return;
+    const url = await ensureShareLink();
+    if (!url) {
+      setInitialExportTab('share');
+      setShowExport(true);
+      toast.error('Failed to create share link');
+      return;
+    }
     try {
       await navigator.clipboard.writeText(url);
       toast.success('Share link copied');
@@ -2241,7 +2315,7 @@ const App: React.FC = () => {
           aiHasMessages={aiMessages.length > 0}
           hasAnyAnnotations={hasAnyAnnotations}
           linkedDocIsActive={linkedDocHook.isActive}
-          callbackShareUrlReady={callbackConfig ? Boolean(shareUrl || shortShareUrl) : true}
+          callbackShareUrlReady={callbackConfig ? Boolean(shareUrl || shortShareUrl || (renderAs === 'html' && (shareHtml || rawHtml))) : true}
           canShareCurrentSession={canShareCurrentSession}
           agentName={agentName}
           availableAgents={availableAgents}
@@ -2619,7 +2693,7 @@ const App: React.FC = () => {
               const output = messageMultiSelectMode ? buildFullAnnotationsOutput() : annotationsOutput;
               await navigator.clipboard.writeText(wrapFeedbackForAgent(output));
             }}
-            onShare={canShareCurrentSession && (shareUrl || shortShareUrl) ? () => { setIsPanelOpen(false); setInitialExportTab('share'); setShowExport(true); } : undefined}
+            onShare={canShareCurrentSession ? () => { setIsPanelOpen(false); setInitialExportTab('share'); setShowExport(true); } : undefined}
             otherFileAnnotations={otherFileAnnotations}
             onOtherFileAnnotationsClick={handleFlashAnnotatedFiles}
           />
