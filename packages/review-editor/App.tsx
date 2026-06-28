@@ -19,12 +19,7 @@ import type { SemanticDiffAdvert } from '@plannotator/shared/semantic-diff-types
 import { configStore, useConfigValue } from '@plannotator/ui/config';
 import { loadDiffFont } from '@plannotator/ui/utils/diffFonts';
 import { getAgentSwitchSettings, getEffectiveAgentName } from '@plannotator/ui/utils/agentSwitch';
-import {
-  getAIProviderSettings,
-  resolveAIModelForProvider,
-  resolveAIProviderSelection,
-  saveAIProviderSelection,
-} from '@plannotator/ui/utils/aiProvider';
+import { useAIProviderConfig } from '@plannotator/ui/hooks/useAIProviderConfig';
 import { DiffTypeSetupDialog } from '@plannotator/ui/components/DiffTypeSetupDialog';
 import { needsDiffTypeSetup } from '@plannotator/ui/utils/diffTypeSetup';
 import { LookAndFeelAnnouncementDialog } from '@plannotator/ui/components/LookAndFeelAnnouncementDialog';
@@ -102,6 +97,8 @@ interface DiffData {
   gitRef: string;
   origin?: Origin;
   diffType?: string;
+  /** Server-built "changes under review" description for Ask AI (current view). */
+  aiReviewContext?: string;
   gitContext?: GitContext;
   diffOptions?: DiffOption[];
   sharingEnabled?: boolean;
@@ -439,14 +436,11 @@ const ReviewApp: React.FC = () => {
   const [aiAvailable, setAiAvailable] = useState(false);
   const [aiProviders, setAiProviders] = useState<Array<{ id: string; name: string; capabilities: Record<string, boolean>; models?: Array<{ id: string; label: string; default?: boolean }> }>>([]);
   const [aiDefaultProvider, setAiDefaultProvider] = useState<string | null>(null);
-  const [aiConfig, setAiConfig] = useState(() => {
-    const saved = getAIProviderSettings();
-    const pid = saved.providerId;
-    return {
-      providerId: pid,
-      model: pid ? (saved.preferredModels[pid] ?? null) : null,
-      reasoningEffort: null as string | null,
-    };
+  const { aiConfig, applyConfigChange } = useAIProviderConfig({
+    providers: aiProviders,
+    defaultProvider: aiDefaultProvider,
+    available: aiAvailable,
+    origin,
   });
   const [showDiffTypeSetup, setShowDiffTypeSetup] = useState(false);
   const [diffTypeSetupPending, setDiffTypeSetupPending] = useState(false);
@@ -460,6 +454,13 @@ const ReviewApp: React.FC = () => {
   }, []);
   const aiChat = useAIChat({
     patch: diffData?.rawPatch ?? '',
+    diffType,
+    base: committedBase,
+    reviewContext: diffData?.aiReviewContext,
+    viewing: {
+      scope: isAllFilesActive ? 'all' : 'file',
+      filePath: isAllFilesActive ? undefined : files[activeFileIndex]?.path,
+    },
     providerId: aiConfig.providerId,
     model: aiConfig.model,
     reasoningEffort: aiConfig.reasoningEffort,
@@ -471,6 +472,7 @@ const ReviewApp: React.FC = () => {
     permissionRequests: aiPermissionRequests,
     respondToPermission: respondToAIPermission,
     ask: askAI,
+    abort: abortAI,
     resetSession: resetAISession,
     sessionId: aiSessionId,
   } = aiChat;
@@ -522,43 +524,13 @@ const ReviewApp: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
-    if (!aiAvailable || aiProviders.length === 0) return;
-    setAiConfig(prev => {
-      const saved = getAIProviderSettings();
-      const selection = resolveAIProviderSelection({
-        providers: aiProviders,
-        origin,
-        settings: saved,
-        serverDefaultProvider: aiDefaultProvider,
-      });
-
-      if (prev.providerId === selection.providerId && prev.model === selection.model) return prev;
-
-      return { ...prev, providerId: selection.providerId, model: selection.model };
-    });
-  }, [aiAvailable, aiProviders, aiDefaultProvider, origin]);
-
+  // Provider/model/effort selection logic lives in the shared hook above; the
+  // app only composes the session reset (the hook can't own it — see the cycle
+  // note in useAIProviderConfig).
   const handleAIConfigChange = useCallback((config: { providerId?: string | null; model?: string | null; reasoningEffort?: string | null }) => {
-    setAiConfig(prev => {
-      const saved = getAIProviderSettings();
-      const providerId = config.providerId !== undefined ? config.providerId : prev.providerId;
-      const providerChanged = config.providerId !== undefined && config.providerId !== prev.providerId;
-      const provider = aiProviders.find(p => p.id === providerId) ?? null;
-      const model = providerChanged
-        ? (config.model !== undefined ? config.model : resolveAIModelForProvider(provider, saved.preferredModels))
-        : (config.model !== undefined ? config.model : prev.model);
-      const next = { ...prev, ...config, providerId, model };
-      saveAIProviderSelection({
-        providerId: next.providerId,
-        model: next.model,
-        origin,
-        settings: saved,
-      });
-      return next;
-    });
+    applyConfigChange(config);
     resetAISession();
-  }, [aiProviders, origin, resetAISession]);
+  }, [applyConfigChange, resetAISession]);
 
   // File-aware Ask AI: the all-files surface resolves the owning file itself
   // (its toolbar selection lives in a file the single-file panel may never
@@ -915,6 +887,7 @@ const ReviewApp: React.FC = () => {
       .then((data: {
         rawPatch: string;
         gitRef: string;
+        aiReviewContext?: string;
         origin?: Origin;
         mode?: string;
         diffType?: string;
@@ -949,6 +922,7 @@ const ReviewApp: React.FC = () => {
           gitRef: data.gitRef,
           origin: data.origin,
           diffType: data.diffType,
+          aiReviewContext: data.aiReviewContext,
           gitContext: data.gitContext,
           diffOptions: data.diffOptions,
           sharingEnabled: data.sharingEnabled,
@@ -1265,6 +1239,7 @@ const ReviewApp: React.FC = () => {
   // Shared function: apply a PR response (used by both initial load and PR switch)
   function applyPRResponse(data: PRSessionUpdate & {
     rawPatch: string; gitRef: string;
+    aiReviewContext?: string;
     repoInfo?: { display: string; branch?: string };
     viewedFiles?: string[]; error?: string;
     semanticDiff?: SemanticDiffAdvert;
@@ -1274,7 +1249,7 @@ const ReviewApp: React.FC = () => {
     const nextFiles = parseDiffToFiles(data.rawPatch);
     dockApi?.getPanel(REVIEW_DIFF_PANEL_ID)?.api.close();
     needsInitialDiffPanel.current = true;
-    setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef } : prev);
+    setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, aiReviewContext: data.aiReviewContext } : prev);
     setFiles(nextFiles);
     if (isPRSwitch) {
       setActiveFileIndex(0);
@@ -1341,6 +1316,7 @@ const ReviewApp: React.FC = () => {
       const data = await res.json() as {
         rawPatch: string;
         gitRef: string;
+        aiReviewContext?: string;
         diffType: string;
         base?: string;
         gitContext?: GitContext;
@@ -1356,7 +1332,7 @@ const ReviewApp: React.FC = () => {
         // Whitespace toggle: update patch in-place, keep the active file.
         // If the current file was removed (whitespace-only), retarget the
         // dock panel to the first remaining file.
-        setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef } : prev);
+        setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, aiReviewContext: data.aiReviewContext } : prev);
         if (data.diffOptions) setWorkspaceDiffOptions(data.diffOptions);
         setFiles(nextFiles);
         const currentPath = files[activeFileIndex]?.path;
@@ -1374,7 +1350,7 @@ const ReviewApp: React.FC = () => {
       } else {
         dockApi?.getPanel(REVIEW_DIFF_PANEL_ID)?.api.close();
         needsInitialDiffPanel.current = true;
-        setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, diffType: data.diffType } : prev);
+        setDiffData(prev => prev ? { ...prev, rawPatch: data.rawPatch, gitRef: data.gitRef, diffType: data.diffType, aiReviewContext: data.aiReviewContext } : prev);
         setFiles(nextFiles);
         setDiffType(data.diffType);
         if (data.diffOptions) setWorkspaceDiffOptions(data.diffOptions);
@@ -2603,6 +2579,7 @@ const ReviewApp: React.FC = () => {
                 aiMessages={aiMessages}
                 isAICreatingSession={aiIsCreatingSession}
                 isAIStreaming={aiIsStreaming}
+                onAIStop={abortAI}
                 onScrollToAILines={handleScrollToAILines}
                 activeFilePath={files[activeFileIndex]?.path}
                 scrollToQuestionId={scrollToQuestionId}

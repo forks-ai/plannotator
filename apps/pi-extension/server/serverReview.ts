@@ -42,7 +42,7 @@ import {
 	type PRDiffScope,
 } from "../generated/pr-stack.js";
 
-import type { WorktreePool } from "../generated/worktree-pool.js";
+import { resolvePoolCwd, type WorktreePool } from "../generated/worktree-pool.js";
 
 import { createEditorAnnotationHandler } from "./annotations.js";
 import { createAgentJobHandler } from "./agent-jobs.js";
@@ -415,9 +415,9 @@ export async function startReviewServer(options: {
 	function resolvePRLocalCwd(): string | null {
 		const pool = options.worktreePool;
 		if (pool && prMeta) {
-			const entry = pool.get(prMeta.url);
-			if (entry?.ready) return entry.path;
-			if (entry) return null;
+			const r = resolvePoolCwd(pool, prMeta.url);
+			if (r.kind === "ready") return r.path;
+			if (r.kind === "pending") return null; // warming up — don't fall back
 		}
 		return options.agentCwd && existsSync(options.agentCwd) ? options.agentCwd : null;
 	}
@@ -433,6 +433,31 @@ export async function startReviewServer(options: {
 	function getWorkspacePromptContext(): WorkspaceReviewPromptContext | undefined {
 		if (!workspace) return undefined;
 		return workspace.getPromptContext();
+	}
+
+	// Ask AI "changes under review" context for the CURRENT view, built by the
+	// SAME machine the review jobs use (contextOnly=true). Returned in the diff
+	// payloads so the chat latches it onto user messages; recomputed wherever the
+	// view changes. Mirrors packages/server/review.ts buildCurrentAiReviewContext.
+	function buildCurrentAiReviewContext(): string {
+		const workspacePrompt = getWorkspacePromptContext();
+		if (workspacePrompt) {
+			return buildAgentReviewUserMessageForTarget(
+				{ kind: "workspace", patch: currentPatch, workspace: workspacePrompt },
+				true,
+			);
+		}
+		// Ready-checked (matches Bun): a warming PR checkout must NOT claim local
+		// access, or the agent would be told to diff a checkout that isn't there.
+		const hasLocalAccess = !!options.gitContext ||
+			(options.worktreePool && prMeta ? resolvePRLocalCwd() !== null : !!options.agentCwd);
+		return buildAgentReviewUserMessage(
+			currentPatch,
+			currentDiffType as DiffType,
+			{ defaultBranch: currentBase, hasLocalAccess, prDiffScope: currentPRDiffScope },
+			prMeta,
+			true,
+		);
 	}
 	const tour = createTourSession();
 	const semanticDiffScratchCwd = getSemanticDiffScratchCwd();
@@ -832,6 +857,7 @@ export async function startReviewServer(options: {
 		if (url.pathname === "/api/diff" && req.method === "GET") {
 			json(res, {
 				rawPatch: currentPatch,
+				aiReviewContext: buildCurrentAiReviewContext(),
 				gitRef: currentGitRef,
 				origin: options.origin ?? "pi",
 				mode: isWorkspaceMode ? "workspace" : undefined,
@@ -929,6 +955,7 @@ export async function startReviewServer(options: {
 
 					json(res, {
 						rawPatch: currentPatch,
+						aiReviewContext: buildCurrentAiReviewContext(),
 						gitRef: currentGitRef,
 						diffType: currentDiffType,
 						diffOptions: workspace.diffOptions,
@@ -970,6 +997,7 @@ export async function startReviewServer(options: {
 
 				json(res, {
 					rawPatch: currentPatch,
+					aiReviewContext: buildCurrentAiReviewContext(),
 					gitRef: currentGitRef,
 					diffType: currentDiffType,
 					// Echo the base the server actually used. resolveBaseBranch
@@ -1006,6 +1034,7 @@ export async function startReviewServer(options: {
 					const semanticDiff = await getSemanticDiffAdvert();
 					json(res, {
 						rawPatch: currentPatch,
+						aiReviewContext: buildCurrentAiReviewContext(),
 						gitRef: currentGitRef,
 						prDiffScope: currentPRDiffScope,
 						...(layerPatchIncomplete ? { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable } : {}),
@@ -1065,6 +1094,7 @@ export async function startReviewServer(options: {
 					captureDiffFingerprint();
 					json(res, {
 						rawPatch: currentPatch,
+						aiReviewContext: buildCurrentAiReviewContext(),
 						gitRef: currentGitRef,
 						prDiffScope: currentPRDiffScope,
 						...(layerPatchIncomplete ? { prPatchIncomplete: true, prPatchUpgradeAvailable: layerUpgradeAvailable } : {}),
@@ -1096,6 +1126,7 @@ export async function startReviewServer(options: {
 				captureDiffFingerprint();
 				json(res, {
 					rawPatch: currentPatch,
+					aiReviewContext: buildCurrentAiReviewContext(),
 					gitRef: currentGitRef,
 					prDiffScope: currentPRDiffScope,
 					semanticDiff: await getSemanticDiffAdvert(),
@@ -1176,6 +1207,7 @@ export async function startReviewServer(options: {
 
 				return json(res, {
 					rawPatch: currentPatch,
+					aiReviewContext: buildCurrentAiReviewContext(),
 					gitRef: currentGitRef,
 					prMetadata: pr.metadata,
 					// The new PR's checkout (null while warming) so Open-in re-roots
