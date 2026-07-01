@@ -457,16 +457,34 @@ export const parseMarkdownToBlocks = (markdown: string): Block[] => {
           htmlLines.push(lines[i]);
         }
       } else if (VOID_HTML_TAGS.has(tagName)) {
-        // Void element (e.g. <img />): no closing tag — the block is this line.
+        // Void element (e.g. <img>): no closing tag, but attributes can wrap across
+        // lines. Consume until the line that actually closes the tag with `>` so a
+        // multi-line <img> isn't truncated to a bare `<img` fragment.
+        while (!lines[i].includes('>') && i + 1 < lines.length && lines[i + 1].trim() !== '') {
+          i++;
+          htmlLines.push(lines[i]);
+        }
       } else {
         const openRe = new RegExp(`<${tagName}(?:\\s|>|/|$)`, 'gi');
         const closeRe = new RegExp(`</${tagName}\\s*>`, 'gi');
-        let depth = (line.match(openRe) || []).length - (line.match(closeRe) || []).length;
-        while (depth > 0 && i + 1 < lines.length) {
-          i++;
-          htmlLines.push(lines[i]);
-          depth += (lines[i].match(openRe) || []).length;
-          depth -= (lines[i].match(closeRe) || []).length;
+        const depth = (line.match(openRe) || []).length - (line.match(closeRe) || []).length;
+        if (depth > 0) {
+          // Scan ahead for the matching close tag. If none is ever found — a
+          // self-closing <video/>, or an unclosed <picture>/<div> — do NOT swallow
+          // the rest of the document into this block; keep it to the opening line.
+          let j = i;
+          let d = depth;
+          const scanned: string[] = [];
+          while (d > 0 && j + 1 < lines.length) {
+            j++;
+            scanned.push(lines[j]);
+            d += (lines[j].match(openRe) || []).length;
+            d -= (lines[j].match(closeRe) || []).length;
+          }
+          if (d === 0) {
+            i = j;
+            for (const s of scanned) htmlLines.push(s);
+          }
         }
       }
 

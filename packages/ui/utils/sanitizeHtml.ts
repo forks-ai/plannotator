@@ -17,6 +17,9 @@ const ALLOWED_ATTR = [
   // <video>/<source> — deliberately no `autoplay`, so embedded clips don't play
   // on their own when a comment/description scrolls into view.
   'controls', 'poster', 'muted', 'loop', 'playsinline', 'type',
+  // <picture>/<source> and responsive <img> — without these the alternate-format
+  // selection is inert and <source> renders as a no-op.
+  'srcset', 'media', 'sizes',
 ];
 
 /**
