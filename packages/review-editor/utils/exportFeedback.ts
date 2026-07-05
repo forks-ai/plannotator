@@ -27,11 +27,25 @@ export interface FeedbackDiffContext {
   mode: string;
   base?: string;
   worktreePath?: string | null;
+  /** Subject of the active commit when mode is `commit:<sha>` — header readability only. */
+  commitSubject?: string;
+}
+
+/** The sha when a `commit:<sha>` diff is (or was) the anchor, else undefined.
+ *  Shared with App's annotation-stamping context so the stamp and the export
+ *  comparison can never parse the mode differently. */
+export function commitShaFromMode(mode: string | undefined): string | undefined {
+  return mode?.startsWith('commit:') ? mode.slice('commit:'.length) : undefined;
 }
 
 function describeDiff(ctx: FeedbackDiffContext): string {
   const { mode, base, worktreePath } = ctx;
   let label: string;
+  const commitSha = commitShaFromMode(mode);
+  if (commitSha) {
+    const subject = ctx.commitSubject ? ` — ${ctx.commitSubject}` : '';
+    return `Commit \`${commitSha.slice(0, 7)}\`${subject} (diff vs its parent)${worktreePath ? ` _(worktree: ${worktreePath})_` : ''}`;
+  }
   switch (mode) {
     case "uncommitted":  label = "Uncommitted changes"; break;
     case "staged":       label = "Staged changes"; break;
@@ -64,7 +78,24 @@ function describeDiff(ctx: FeedbackDiffContext): string {
  * diff the reviewer was looking at — otherwise the agent only sees file
  * paths and line numbers and has to guess which diff those anchor to.
  */
-function formatFileAnnotations(fileAnnotations: CodeAnnotation[], headingLevel = '###'): string {
+/**
+ * Anchor-mismatch note: an annotation made on a commit:<sha> diff carries
+ * line numbers from THAT commit's diff-vs-parent — exporting it under any
+ * other diff header (or vice versa) without saying so would silently point
+ * the agent at the wrong code. Empty when the anchor matches the header.
+ */
+function commitMismatchNote(ann: CodeAnnotation, currentCommitSha?: string): string {
+  if (ann.commitSha && ann.commitSha !== currentCommitSha) {
+    const subject = ann.commitSubject ? ` ("${ann.commitSubject}")` : '';
+    return `_Made on commit \`${ann.commitSha.slice(0, 7)}\`${subject} — anchored to that commit's diff, not the diff above._\n`;
+  }
+  if (!ann.commitSha && currentCommitSha) {
+    return `_Made on a working-tree diff, not commit \`${currentCommitSha.slice(0, 7)}\` — anchored there._\n`;
+  }
+  return '';
+}
+
+function formatFileAnnotations(fileAnnotations: CodeAnnotation[], headingLevel = '###', currentCommitSha?: string): string {
   let output = '';
 
   const sorted = [...fileAnnotations].sort((a, b) => {
@@ -82,6 +113,7 @@ function formatFileAnnotations(fileAnnotations: CodeAnnotation[], headingLevel =
 
     if (scope === 'file') {
       output += `${headingLevel} File Comment\n`;
+      output += commitMismatchNote(ann, currentCommitSha);
       if (ann.text) {
         output += `${prefix}${ann.text}\n`;
       } else if (prefix) {
@@ -101,6 +133,7 @@ function formatFileAnnotations(fileAnnotations: CodeAnnotation[], headingLevel =
       ? ` — \`\`${ann.tokenText.replace(/`/g, '\\`')}\`\`${ann.charStart != null ? ` (chars ${ann.charStart}-${ann.charEnd})` : ''}`
       : '';
     output += `${headingLevel} ${lineRange} (${ann.side})${tokenSuffix}\n`;
+    output += commitMismatchNote(ann, currentCommitSha);
 
     if (ann.text) {
       output += `${prefix}${ann.text}\n`;
@@ -146,12 +179,12 @@ function groupByFile(annotations: CodeAnnotation[]): Map<string, CodeAnnotation[
   return grouped;
 }
 
-function renderFileGroups(grouped: Map<string, CodeAnnotation[]>, headingLevel: string): string {
+function renderFileGroups(grouped: Map<string, CodeAnnotation[]>, headingLevel: string, currentCommitSha?: string): string {
   const annotationHeading = headingLevel + '#';
   let output = '';
   for (const [filePath, fileAnnotations] of grouped) {
     output += `${headingLevel} ${filePath}\n\n`;
-    output += formatFileAnnotations(fileAnnotations, annotationHeading);
+    output += formatFileAnnotations(fileAnnotations, annotationHeading, currentCommitSha);
   }
   return output;
 }
@@ -162,19 +195,19 @@ function scopeDisplayLabel(scope: string): string {
   return scope;
 }
 
-function renderScopedGroups(annotations: CodeAnnotation[], headingLevel: string): string {
+function renderScopedGroups(annotations: CodeAnnotation[], headingLevel: string, currentCommitSha?: string): string {
   const scopes = new Set(annotations.map(a => a.diffScope).filter(Boolean));
-  if (scopes.size <= 1) return renderFileGroups(groupByFile(annotations), headingLevel);
+  if (scopes.size <= 1) return renderFileGroups(groupByFile(annotations), headingLevel, currentCommitSha);
 
   let output = '';
   for (const scope of scopes) {
     const scopeAnns = annotations.filter(a => a.diffScope === scope);
     output += `${headingLevel} ${scopeDisplayLabel(scope)}\n\n`;
-    output += renderFileGroups(groupByFile(scopeAnns), headingLevel + '#');
+    output += renderFileGroups(groupByFile(scopeAnns), headingLevel + '#', currentCommitSha);
   }
   const unscopedAnns = annotations.filter(a => !a.diffScope);
   if (unscopedAnns.length > 0) {
-    output += renderFileGroups(groupByFile(unscopedAnns), headingLevel);
+    output += renderFileGroups(groupByFile(unscopedAnns), headingLevel, currentCommitSha);
   }
   return output;
 }
@@ -213,7 +246,7 @@ export function exportReviewFeedback(
         `${prMeta.url}\n\n`
       : `# Code Review Feedback\n\n${diffContext ? `**Diff:** ${describeDiff(diffContext)}\n\n` : ''}`;
 
-    output += renderScopedGroups(placed, '##');
+    output += renderScopedGroups(placed, '##', commitShaFromMode(diffContext?.mode));
     output += generalSection;
     return output;
   }

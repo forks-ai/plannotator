@@ -58,7 +58,7 @@ import { useDiffFreshness } from './hooks/useDiffFreshness';
 import { usePRSession, type PRSessionUpdate } from './hooks/usePRSession';
 import { useAnnotationFactory } from './hooks/useAnnotationFactory';
 import { DEMO_DIFF } from './demoData';
-import { exportReviewFeedback, buildProseFeedback } from './utils/exportFeedback';
+import { exportReviewFeedback, buildProseFeedback, commitShaFromMode } from './utils/exportFeedback';
 import { parseDiffToFiles } from './utils/diffParser';
 import { ReviewSubmissionDialog, buildReviewSubmission, type ReviewSubmission, type SubmissionTarget } from './components/ReviewSubmissionDialog';
 import { ReviewStateProvider, type ReviewState } from './dock/ReviewStateContext';
@@ -316,7 +316,6 @@ const ReviewApp: React.FC = () => {
   }, [repoInfo]);
 
   const { prMetadata, prStackInfo, prStackTree, prDiffScope, prDiffScopeOptions, prPatchIncomplete, prPatchUpgradeAvailable, updatePRSession } = usePRSession();
-  const { withPRContext } = useAnnotationFactory(prMetadata, prStackInfo ? prDiffScope : undefined);
 
   // The Commits view (linear history rail) exists for plain local git
   // sessions only — PR/workspace/jj/p4 keep their existing panels. Unlike
@@ -908,6 +907,19 @@ const ReviewApp: React.FC = () => {
     }
     return { activeWorktreePath: null, activeDiffBase: diffType };
   }, [diffType]);
+
+  // Annotations created while a commit:<sha> diff is on screen are stamped
+  // with that commit (sha + subject) — their line numbers anchor to the
+  // commit's diff-vs-parent, not the working tree, and the feedback export
+  // labels them accordingly if the user switches diffs before sending.
+  // commitInfo is the sidecar for the ACTIVE commit diff (cleared on switch),
+  // so its subject is trusted only when it echoes the active sha.
+  const activeCommitContext = useMemo(() => {
+    const sha = commitShaFromMode(activeDiffBase);
+    if (!sha) return null;
+    return { sha, subject: commitInfo?.sha === sha ? commitInfo.subject : undefined };
+  }, [activeDiffBase, commitInfo]);
+  const { withPRContext } = useAnnotationFactory(prMetadata, prStackInfo ? prDiffScope : undefined, activeCommitContext);
 
   // Context rule shared by both auto-open effects below (and mirrored by
   // GuideScreen's matchesContext): a job stamped with a PR url only belongs
@@ -2136,8 +2148,9 @@ const ReviewApp: React.FC = () => {
             mode: activeDiffBase,
             base: committedBase ?? undefined,
             worktreePath: activeWorktreePath,
+            commitSubject: activeCommitContext?.subject,
           },
-    [prMetadata, activeDiffBase, committedBase, activeWorktreePath],
+    [prMetadata, activeDiffBase, committedBase, activeWorktreePath, activeCommitContext],
   );
 
   const prReviewScopeLabel = useMemo(() => {

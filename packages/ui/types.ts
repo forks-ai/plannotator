@@ -152,6 +152,13 @@ export interface CodeAnnotation {
   prTitle?: string;
   prRepo?: string;
   diffScope?: 'layer' | 'full-stack';
+  /** Set when the annotation was created on a commit:<sha> diff (Commits
+   *  panel). Line numbers anchor to THAT commit's diff-vs-parent — the export
+   *  labels the annotation with its commit when sent from any other diff, so
+   *  the agent never reads historical line numbers against the current diff. */
+  commitSha?: string;
+  /** The commit's one-line subject, captured for readable export labels. */
+  commitSubject?: string;
 }
 
 /** Token-level metadata passed from selection to annotation creation. */
