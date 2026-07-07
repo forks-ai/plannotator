@@ -48,7 +48,7 @@ import { usePrintMode } from '@plannotator/ui/hooks/usePrintMode';
 import { useResizablePanel } from '@plannotator/ui/hooks/useResizablePanel';
 import { ResizeHandle } from '@plannotator/ui/components/ResizeHandle';
 import { OverlayScrollArea } from '@plannotator/ui/components/OverlayScrollArea';
-import { ScrollViewportContext } from '@plannotator/ui/hooks/useScrollViewport';
+import { ScrollViewportProvider } from '@plannotator/ui/hooks/useScrollViewport';
 import { useOverlayViewport } from '@plannotator/ui/hooks/useOverlayViewport';
 import { useIsMobile } from '@plannotator/ui/hooks/useIsMobile';
 import {
@@ -101,7 +101,7 @@ import type { AgentTerminalCapability } from '@plannotator/shared/agent-terminal
 // same env var on the server side so V2/V3 stay paired.
 import { DEMO_PLAN_CONTENT as DEFAULT_DEMO_PLAN_CONTENT } from './demoPlan';
 import { DIFF_DEMO_PLAN_CONTENT } from './demoPlanDiffDemo';
-import { canUseAnnotateWideMode, resolveWideModeExitLayout, type WideModeLayoutSnapshot, type WideModeType } from './wideMode';
+import { canUseAnnotateWideMode, resolveWideModeExitLayout, type WideModeLayoutSnapshot, type WideModeType } from '@plannotator/ui/utils/wideMode';
 import {
   annotateSidebarShortcuts,
   useAnnotateSidebarShortcuts,
@@ -3935,7 +3935,7 @@ const App: React.FC = () => {
         )}
 
         {/* Main Content */}
-        <ScrollViewportContext.Provider value={scrollViewport}>
+        <ScrollViewportProvider viewport={scrollViewport}>
         <div data-print-region="content" className={`flex-1 flex overflow-hidden relative z-0 ${isResizing ? 'select-none' : ''}`}>
           {/* Tater sprites — inside content wrapper so z-0 stacking context applies */}
           {taterMode && <TaterSpriteRunning />}
@@ -4478,7 +4478,7 @@ const App: React.FC = () => {
           )}
           </div>
         </div>
-        </ScrollViewportContext.Provider>
+        </ScrollViewportProvider>
 
         {/* Code File Popout */}
         {codeFilePopout.popoutProps && (

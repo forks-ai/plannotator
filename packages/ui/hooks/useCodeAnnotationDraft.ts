@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { CodeAnnotation, Annotation, CommentAnnotation } from '../types';
+import { getDraftTransport } from './useAnnotationDraft';
 
 const DEBOUNCE_MS = 500;
 
@@ -78,17 +79,12 @@ export function useCodeAnnotationDraft({
   useEffect(() => {
     if (!isApiMode) return;
 
-    fetch('/api/draft')
-      .then(async res => {
-        const data = await res.json().catch(() => null) as DraftData | MissingDraftData | null;
-        if (!res.ok) {
-          const generation = readDraftGeneration((data as MissingDraftData | null)?.draftGeneration);
-          if (generation !== null) {
-            draftGenerationRef.current = Math.max(draftGenerationRef.current, generation);
-          }
-          return null;
+    getDraftTransport().load()
+      .then(({ data, generation }) => {
+        if (generation !== null) {
+          draftGenerationRef.current = Math.max(draftGenerationRef.current, generation);
         }
-        return data;
+        return data as DraftData | null;
       })
       .then((data: DraftData | null) => {
         const generation = readDraftGeneration(data?.draftGeneration);
@@ -143,10 +139,9 @@ export function useCodeAnnotationDraft({
       if (isEmpty) {
         // The user cleared everything (#948). Delete the draft with a generation
         // tombstone so it can't resurface on refresh and a late save can't revive
-        // it. Mirrors useAnnotationDraft.persistNow.
-        fetch(`/api/draft?generation=${draftGeneration}`, { method: 'DELETE' }).catch(() => {
-          // Silent failure
-        });
+        // it. Mirrors useAnnotationDraft.persistNow — routed through the draft
+        // transport seam so a host backend tombstones its own stored draft too.
+        getDraftTransport().remove(draftGeneration, { keepalive: false }).catch(() => {});
         return;
       }
 
@@ -159,13 +154,7 @@ export function useCodeAnnotationDraft({
         ts: Date.now(),
       };
 
-      fetch('/api/draft', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      }).catch(() => {
-        // Silent failure
-      });
+      getDraftTransport().save(payload, { keepalive: false }).catch(() => {});
     }, DEBOUNCE_MS);
 
     return () => {
@@ -198,7 +187,7 @@ export function useCodeAnnotationDraft({
     draftGenerationRef.current = deletedGeneration;
     setDraftBanner(null);
     draftDataRef.current = null;
-    fetch(`/api/draft?generation=${deletedGeneration}`, { method: 'DELETE' }).catch(() => {});
+    getDraftTransport().remove(deletedGeneration, { keepalive: false }).catch(() => {});
   }, []);
 
   return { draftBanner, restoreDraft, getDraftGeneration, dismissDraft };

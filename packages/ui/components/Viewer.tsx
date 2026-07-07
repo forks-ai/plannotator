@@ -75,6 +75,9 @@ interface ViewerProps {
    *  so out-of-tree relative references (e.g. `../foo.ts` in a linked doc)
    *  resolve against the doc's own directory rather than only cwd. */
   codePathBaseDir?: string;
+  /** Opt out of `/api/doc/exists` code-path validation (host without that
+   *  endpoint). Default undefined for Plannotator => validation stays on. */
+  disableCodePathValidation?: boolean;
   linkedDocInfo?: LinkedDocBadgeInfo | null;
   // Plan diff props
   planDiffStats?: { additions: number; deletions: number; modifications: number } | null;
@@ -178,6 +181,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   linkedDocInfo,
   imageBaseDir,
   codePathBaseDir,
+  disableCodePathValidation,
   copyLabel,
   actionsLabelMode = 'full',
   archiveInfo,
@@ -234,7 +238,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
   const [isCodeBlockToolbarExiting, setIsCodeBlockToolbarExiting] = useState(false);
   const [hoveredTable, setHoveredTable] = useState<{ block: Block; element: HTMLElement } | null>(null);
   const [isTableToolbarExiting, setIsTableToolbarExiting] = useState(false);
-  const tableHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const tableHoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [popoutTable, setPopoutTable] = useState<Block | null>(null);
   // Viewer-specific comment popover state (global comments + code blocks)
   const [viewerCommentPopover, setViewerCommentPopover] = useState<{
@@ -250,7 +254,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     anchorEl: HTMLElement;
     codeBlock: { block: Block; element: HTMLElement };
   } | null>(null);
-  const hoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hoverTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stickySentinelRef = useRef<HTMLDivElement>(null);
   const lastAutoScrolledHashRef = useRef<string | null>(null);
   const [isStuck, setIsStuck] = useState(false);
@@ -551,7 +555,7 @@ export const Viewer = forwardRef<ViewerHandle, ViewerProps>(({
     setViewerCommentPopover(null);
   }, []);
 
-  const codePathValidation = useValidatedCodePaths(markdown, codePathBaseDir);
+  const codePathValidation = useValidatedCodePaths(markdown, codePathBaseDir, disableCodePathValidation);
 
   return (
     <CodePathValidationContext.Provider value={codePathValidation}>
