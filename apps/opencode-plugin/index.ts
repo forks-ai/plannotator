@@ -195,9 +195,12 @@ function logPlannotatorReady(client: any, label: string, url: string): void {
   // URL too so remote users (no auto-opened browser) actually see it.
   // Best-effort: older hosts without /tui/show-toast just no-op.
   try {
-    void client.tui?.showToast?.({
+    const result = client.tui?.showToast?.({
       body: { title: "Plannotator", message: `Open ${label}: ${url}`, variant: "info" },
     });
+    // A fetch-level failure (host restarting) rejects the SDK promise; swallow
+    // it so a cosmetic toast can never surface an unhandled rejection.
+    if (result && typeof result.catch === "function") result.catch(() => {});
   } catch {
     // Toast delivery is best-effort.
   }

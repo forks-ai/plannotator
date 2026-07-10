@@ -113,9 +113,12 @@ function toastPlannotatorUrl(client: OpenCodeClient, message: string, toastedUrl
   if (!url || toastedUrls.has(url)) return;
   toastedUrls.add(url);
   try {
-    void (client as any).tui?.showToast?.({
+    const result = (client as any).tui?.showToast?.({
       body: { title: "Plannotator", message, variant: "info" },
     });
+    // A fetch-level failure (host restarting) rejects the SDK promise; swallow
+    // it so a cosmetic toast can never surface an unhandled rejection.
+    if (result && typeof result.catch === "function") result.catch(() => {});
   } catch {
     // Toast delivery is best-effort.
   }
