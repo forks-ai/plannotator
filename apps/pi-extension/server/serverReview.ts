@@ -76,7 +76,7 @@ import {
 	readDraftGenerationFromUrl,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl } from "./helpers.js";
+import { handleApiNotFound, html, json, parseBody, requestUrl } from "./helpers.js";
 import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.js";
 
 import { isRemoteSession, listenOnPort } from "./network.js";
@@ -2360,9 +2360,8 @@ export async function startReviewServer(options: {
 				}
 			}
 			if (await handlePiAIRequest(req, res, url, aiRuntime)) return;
-			// Unmatched /api/ai/* paths fall through to the app shell, same as
-			// the original dispatch chain.
-			html(res, options.htmlContent);
+			handleApiNotFound(res, url.pathname);
+			return;
 		} else if (url.pathname === "/api/exit" && req.method === "POST") {
 			deleteDraft(draftKey, readDraftGenerationFromUrl(req));
 			resolveDecision({ approved: false, feedback: '', annotations: [], exit: true });
@@ -2382,6 +2381,8 @@ export async function startReviewServer(options: {
 				const message = err instanceof Error ? err.message : "Failed to process feedback";
 				json(res, { error: message }, 500);
 			}
+		} else if (url.pathname.startsWith("/api/")) {
+			handleApiNotFound(res, url.pathname);
 		} else {
 			html(res, options.htmlContent);
 		}

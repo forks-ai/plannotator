@@ -14,7 +14,7 @@
 import { isRemoteSession, getServerHostname, getServerPort } from "./remote";
 import { getRepoInfo } from "./repo";
 import type { Origin } from "@plannotator/shared/agents";
-import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
+import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc } from "./reference-handlers";
 import { handleFileBrowserFilesStream } from "./reference-watch";
 import { resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
@@ -644,7 +644,7 @@ export async function startAnnotateServer(
               }
               return handler(req);
             }
-            return Response.json({ error: "Not found" }, { status: 404 });
+            return handleApiNotFound(url.pathname);
           }
 
           // API: Exit annotation session without feedback
@@ -697,6 +697,11 @@ export async function startAnnotateServer(
 
           // Favicon
           if (url.pathname === "/favicon.svg") return handleFavicon();
+
+          // API 404 guard: unknown /api/* routes should return JSON, not HTML
+          if (url.pathname.startsWith("/api/")) {
+            return handleApiNotFound(url.pathname);
+          }
 
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {

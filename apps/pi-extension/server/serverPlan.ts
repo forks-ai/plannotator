@@ -25,7 +25,7 @@ import {
 	handleSaveNotesRequest,
 	handleUploadRequest,
 } from "./handlers.js";
-import { html, json, parseBody, requestUrl } from "./helpers.js";
+import { handleApiNotFound, html, json, parseBody, requestUrl } from "./helpers.js";
 import { createPiAIRuntime, handlePiAIRequest } from "./ai-runtime.js";
 import { openEditorDiff } from "./ide.js";
 import {
@@ -444,6 +444,8 @@ export async function startPlanReviewServer(options: {
 			deleteDraft(draftKey, draftGeneration);
 			publishDecision({ approved: false, feedback, savedPath });
 			json(res, { ok: true, savedPath });
+		} else if (url.pathname.startsWith("/api/")) {
+			handleApiNotFound(res, url.pathname);
 		} else {
 			html(res, options.htmlContent);
 		}

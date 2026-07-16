@@ -55,7 +55,7 @@ import {
 import { type AgentJobInfo, REVIEW_OUTPUT_FAILED, markJobReviewFailed } from "@plannotator/shared/agent-jobs";
 import { createCommitAvatarResolver } from "@plannotator/shared/commit-avatars";
 import { getRepoInfo } from "./repo";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, readDraftGenerationFromBody, readDraftGenerationFromUrl, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { createEditorAnnotationHandler } from "./editor-annotations";
 import { createExternalAnnotationHandler } from "./external-annotations";
@@ -2510,11 +2510,16 @@ export async function startReviewServer(
               }
               return handler(req);
             }
-            return Response.json({ error: "Not found" }, { status: 404 });
+            return handleApiNotFound(url.pathname);
           }
 
           // Favicon
           if (url.pathname === "/favicon.svg") return handleFavicon();
+
+          // API 404 guard: unknown /api/* routes should return JSON, not HTML
+          if (url.pathname.startsWith("/api/")) {
+            return handleApiNotFound(url.pathname);
+          }
 
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {

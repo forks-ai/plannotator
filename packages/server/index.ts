@@ -44,7 +44,7 @@ import { detectProjectName } from "./project";
 import { loadConfig, saveConfig, detectGitUser, getServerConfig } from "./config";
 import { readImprovementHook, getImprovementHookExpectedPath } from "@plannotator/shared/improvement-hooks";
 import { composeImproveContext } from "@plannotator/shared/pfm-reminder";
-import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleFavicon, handleSaveNotes, readDraftGenerationFromBody, type OpencodeClient } from "./shared-handlers";
+import { handleImage, handleUpload, handleAgents, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleSaveNotes, readDraftGenerationFromBody, type OpencodeClient } from "./shared-handlers";
 import { contentHash, deleteDraft } from "./draft";
 import { handleDoc, handleDocExists, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, handleFileBrowserFiles } from "./reference-handlers";
 import { handleFileBrowserFilesStream } from "./reference-watch";
@@ -53,7 +53,7 @@ import { createEditorAnnotationHandler } from "./editor-annotations";
 import { createExternalAnnotationHandler } from "./external-annotations";
 import { isWSL } from "./browser";
 import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
-import type { AIEndpoints } from "@plannotator/ai";
+import { isAIEndpointPath, type AIEndpoints } from "@plannotator/ai";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -424,6 +424,9 @@ export async function startPlannotatorServer(
 
           if (url.pathname.startsWith("/api/ai/")) {
             if (!aiRuntime) {
+              if (!isAIEndpointPath(url.pathname)) {
+                return handleApiNotFound(url.pathname);
+              }
               if (url.pathname.slice("/api/ai/".length) === "capabilities" && req.method === "GET") {
                 return Response.json({ available: false, providers: [] });
               }
@@ -436,7 +439,7 @@ export async function startPlannotatorServer(
               }
               return handler(req);
             }
-            return Response.json({ error: "Not found" }, { status: 404 });
+            return handleApiNotFound(url.pathname);
           }
 
           // API: Save to notes (decoupled from approve/deny)
@@ -568,6 +571,11 @@ export async function startPlannotatorServer(
 
           // Favicon
           if (url.pathname === "/favicon.svg") return handleFavicon();
+
+          // API 404 guard: unknown /api/* routes should return JSON, not HTML
+          if (url.pathname.startsWith("/api/")) {
+            return handleApiNotFound(url.pathname);
+          }
 
           // Serve embedded HTML for all other routes (SPA)
           return new Response(htmlContent, {
