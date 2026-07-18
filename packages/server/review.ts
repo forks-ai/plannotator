@@ -100,6 +100,11 @@ import {
   createPRContextLiveCache,
   serializePRContextSSEEvent,
 } from "@plannotator/shared/pr-context-live";
+import {
+  fetchPRArtifactContent,
+  fetchPRArtifactDocument,
+  PRArtifactDocumentError,
+} from "@plannotator/shared/pr-artifact-document";
 import { AI_QUERY_ENDPOINT, createAIRuntime } from "./ai-runtime";
 import type { AIEndpoints } from "@plannotator/ai";
 import { isWSL } from "./browser";
@@ -2137,6 +2142,82 @@ export async function startReviewServer(
               const message =
                 err instanceof Error ? err.message : "Failed to fetch PR context";
               return Response.json({ error: message }, { status: 500 });
+            }
+          }
+
+          // API: Fetch a context-referenced HTML/Markdown artifact through the
+          // authenticated provider session. The shared helper owns URL and
+          // redirect validation so this never becomes an open proxy.
+          if (url.pathname === "/api/pr-artifact-document" && req.method === "GET") {
+            if (!isPRMode || !prRef || !prMetadata) {
+              return Response.json({ error: "Not in PR mode" }, { status: 400 });
+            }
+            const artifactUrl = url.searchParams.get("url");
+            if (!artifactUrl) {
+              return Response.json({ error: "Missing artifact URL" }, { status: 400 });
+            }
+            try {
+              const context = await prContextLive.getContext(prMetadata.url, prRef);
+              const document = await fetchPRArtifactDocument(
+                prCommandRuntime,
+                prMetadata,
+                context,
+                artifactUrl,
+              );
+              return new Response(document.content, {
+                headers: {
+                  "Content-Type": "text/plain; charset=utf-8",
+                  "Cache-Control": "private, max-age=300",
+                  "Content-Security-Policy": "sandbox; default-src 'none'",
+                  "X-Content-Type-Options": "nosniff",
+                },
+              });
+            } catch (error) {
+              const status = error instanceof PRArtifactDocumentError ? error.status : 500;
+              const message = error instanceof Error ? error.message : "Failed to fetch artifact document";
+              return Response.json({ error: message }, { status });
+            }
+          }
+
+          // API: Serve provider media and resources derived from a referenced
+          // artifact document. The helper validates both the source document
+          // and target URL before forwarding provider credentials.
+          if (url.pathname === "/api/pr-artifact-content" && req.method === "GET") {
+            if (!isPRMode || !prRef || !prMetadata) {
+              return Response.json({ error: "Not in PR mode" }, { status: 400 });
+            }
+            const artifactUrl = url.searchParams.get("url");
+            if (!artifactUrl) {
+              return Response.json({ error: "Missing artifact URL" }, { status: 400 });
+            }
+            try {
+              const context = await prContextLive.getContext(prMetadata.url, prRef);
+              const content = await fetchPRArtifactContent(
+                prCommandRuntime,
+                prMetadata,
+                context,
+                artifactUrl,
+                {
+                  sourceUrl: url.searchParams.get("source") ?? undefined,
+                  range: req.headers.get("range") ?? undefined,
+                },
+              );
+              return new Response(Uint8Array.from(content.content).buffer, {
+                status: content.status,
+                headers: {
+                  "Content-Type": content.contentType,
+                  "Cache-Control": "private, max-age=300",
+                  "Content-Security-Policy": "sandbox",
+                  "X-Content-Type-Options": "nosniff",
+                  "Content-Length": String(content.content.byteLength),
+                  ...(content.contentRange ? { "Content-Range": content.contentRange } : {}),
+                  ...(content.acceptRanges ? { "Accept-Ranges": content.acceptRanges } : {}),
+                },
+              });
+            } catch (error) {
+              const status = error instanceof PRArtifactDocumentError ? error.status : 500;
+              const message = error instanceof Error ? error.message : "Failed to fetch artifact content";
+              return Response.json({ error: message }, { status });
             }
           }
 
