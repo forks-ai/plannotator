@@ -2748,13 +2748,13 @@ const ReviewApp: React.FC = () => {
       {isSwitchingPRScope && <PRSwitchOverlay />}
       <div className="h-screen flex flex-col bg-background overflow-hidden">
         {/* Header */}
-        <header className="py-1 flex items-center justify-between px-2 md:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl z-50">
-          <div className="min-w-0 flex items-center gap-2 md:gap-3">
+        <header className="py-1 flex flex-col min-[480px]:flex-row items-stretch min-[480px]:items-center min-[480px]:justify-between gap-1 min-[480px]:gap-0 px-2 lg:px-4 border-b border-border/50 bg-card/50 backdrop-blur-xl z-50">
+          <div className="min-w-0 flex flex-1 items-center gap-2 lg:gap-3">
             {shouldShowFileTree && (
               <>
                 <button
                   onClick={() => setIsFileTreeOpen(prev => !prev)}
-                  className={`p-1 rounded-md transition-all focus-visible:outline-none ${
+                  className={`h-7 w-7 flex shrink-0 items-center justify-center rounded-md transition-all focus-visible:outline-none ${
                     isFileTreeOpen
                       ? 'text-primary'
                       : 'text-muted-foreground hover:text-foreground hover:bg-muted'
@@ -2763,7 +2763,7 @@ const ReviewApp: React.FC = () => {
                 >
                   <FolderTree className="w-3.5 h-3.5" />
                 </button>
-                <div className="w-px h-5 bg-border/50 mx-1 hidden md:block" />
+                <div className="w-px h-5 bg-border/50 mx-1 hidden lg:block" />
               </>
             )}
             {hasSearchableFiles && (
@@ -2776,7 +2776,7 @@ const ReviewApp: React.FC = () => {
                     }
                     setGuideOpen(prev => !prev);
                   }}
-                  className={`relative flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                  className={`relative flex h-7 shrink-0 items-center gap-1 px-2 rounded-md text-xs font-medium transition-colors ${
                     guideOpen ? 'bg-primary/15 text-primary' : 'bg-muted hover:bg-muted/80'
                   }`}
                   title={guideOpen ? 'Back to the diff workspace' : 'Open guided review'}
@@ -2790,16 +2790,17 @@ const ReviewApp: React.FC = () => {
                     guideOpen ? 'Go back' : 'Guide'
                   )}
                 </button>
-                <div className="w-px h-5 bg-border/50 mx-1 hidden md:block" />
+                <div className="w-px h-5 bg-border/50 mx-1 hidden lg:block" />
               </>
             )}
             {prMetadata ? (
-              <div className="min-w-0 flex items-center gap-2 md:gap-3">
+              <div className="min-w-0 flex flex-1 items-center gap-2 lg:gap-3 overflow-hidden">
                 <span
-                  className="text-xs text-muted-foreground/60 inline-flex items-center gap-1 whitespace-nowrap"
+                  className="min-w-0 max-w-[160px] xl:max-w-[240px] text-xs text-muted-foreground/60 hidden sm:inline-flex items-center gap-1"
+                  title={displayRepo}
                 >
                   <RepoIcon className="w-3 h-3 flex-shrink-0" />
-                  {displayRepo}
+                  <span className="truncate">{displayRepo}</span>
                 </span>
                 <PRSelector
                   mrNumberLabel={mrNumberLabel}
@@ -2821,7 +2822,7 @@ const ReviewApp: React.FC = () => {
                 />
               </div>
             ) : repoInfo ? (
-              <div className="min-w-0 flex items-center gap-2 md:gap-3">
+              <div className="min-w-0 flex flex-1 items-center gap-2 lg:gap-3 overflow-hidden">
                 {repoInfo.branch && (
                   <span
                     className="text-xs font-mono text-foreground truncate"
@@ -2843,7 +2844,7 @@ const ReviewApp: React.FC = () => {
             )}
           </div>
 
-          <div className="flex items-center gap-1 md:gap-2">
+          <div className="min-w-0 w-full min-[480px]:w-auto flex flex-wrap min-[480px]:flex-nowrap shrink-0 items-center justify-end gap-1 lg:gap-2">
             {/* Split/Unified toggle + diff options moved to the dock tab strip
                 (rightHeaderActionsComponent → ReviewDockRightActions). */}
             {origin ? (
@@ -2859,13 +2860,13 @@ const ReviewApp: React.FC = () => {
                         if (showDestSpotlight) dismissDestSpotlight();
                         setShowDestinationMenu(prev => !prev);
                       }}
-                      className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-muted hover:bg-muted/80 transition-colors"
+                      className="flex h-7 items-center gap-1 px-2 rounded-md text-xs font-medium bg-muted hover:bg-muted/80 transition-colors"
                       title={reviewDestination === 'platform' ? `Posting to ${platformLabel} ${mrLabel}` : 'Sending to agent session'}
                     >
                       {reviewDestination === 'platform' ? (
                         <>
                           {prMetadata?.platform === 'gitlab' ? <GitLabIcon className="w-3.5 h-3.5" /> : <GitHubIcon className="w-3.5 h-3.5" />}
-                          <span>{platformLabel}</span>
+                          <span className="hidden lg:inline">{platformLabel}</span>
                         </>
                       ) : 'Agent'}
                       <svg className="w-3 h-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -3049,6 +3050,7 @@ const ReviewApp: React.FC = () => {
                       onClick={() => totalAnnotationCount > 0 ? setShowExitWarning(true) : handleExit()}
                       disabled={isSendingFeedback || isApproving || isExiting || isPlatformActioning}
                       isLoading={isExiting}
+                      labelBreakpoint="lg"
                     />
                     {/* Progressive disclosure: only show Post Comments once there
                         are annotations to post — mirrors agent mode hiding Send
@@ -3064,6 +3066,7 @@ const ReviewApp: React.FC = () => {
                         loadingLabel="Posting..."
                         shortLoadingLabel="Posting..."
                         title="Post review to platform"
+                        labelBreakpoint="lg"
                       />
                     )}
                     <div className="relative group/approve">
@@ -3083,6 +3086,7 @@ const ReviewApp: React.FC = () => {
                             ? `You can't approve your own ${mrLabel}`
                             : "Approve - no changes needed"
                         }
+                        labelBreakpoint="lg"
                       />
                       {platformUser && prMetadata?.author === platformUser && (
                         <div className="absolute top-full right-0 mt-2 px-3 py-2 bg-popover border border-border rounded-lg shadow-xl text-xs text-foreground w-48 text-center opacity-0 invisible group-hover/approve:opacity-100 group-hover/approve:visible transition-all pointer-events-none z-50">
@@ -3119,7 +3123,7 @@ const ReviewApp: React.FC = () => {
               </button>
             )}
 
-            <div className="w-px h-5 bg-border/50 mx-1 hidden md:block" />
+            <div className="w-px h-5 bg-border/50 mx-1 hidden lg:block" />
 
             {/* Sidebar tab toggles */}
             <button
@@ -3173,7 +3177,7 @@ const ReviewApp: React.FC = () => {
               </button>
             )}
 
-            <div className="w-px h-5 bg-border/50 mx-1 hidden md:block" />
+            <div className="w-px h-5 bg-border/50 mx-1 hidden lg:block" />
 
             <ReviewHeaderMenu
               onOpenSettings={() => setOpenSettingsMenu(true)}
