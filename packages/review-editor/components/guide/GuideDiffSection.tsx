@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { GuideDiffRef } from '@plannotator/shared/guide';
 import { renderInlineMarkdown } from '../../utils/renderInlineMarkdown';
 import { DiffViewer } from '../DiffViewer';
@@ -35,6 +35,7 @@ interface GuideDiffSectionProps {
  */
 export const GuideDiffSection: React.FC<GuideDiffSectionProps> = ({ diffRef, isFocused, onFocus }) => {
   const state = useReviewState();
+  const [collapsed, setCollapsed] = useState(false);
   const file = useMemo(
     () => state.files.find((candidate) => candidate.path === diffRef.file),
     [state.files, diffRef.file],
@@ -63,6 +64,25 @@ export const GuideDiffSection: React.FC<GuideDiffSectionProps> = ({ diffRef, isF
   // changes re-render every mounted GuideDiffSection (isFocused flips), not
   // just the one gaining focus. Recompute only when the patch text itself changes.
   const diffHeight = useMemo(() => (file ? estimateDiffHeight(file.patch) : 0), [file?.patch]);
+
+  const handleToggleViewed = () => {
+    const wasViewed = state.viewedFiles.has(diffRef.file);
+    state.onToggleViewed(diffRef.file);
+    if (!wasViewed) setCollapsed(true);
+  };
+
+  // Reveal channel (state.guideRevealFile): a sidebar jump — annotation click
+  // or AI line citation — targeted THIS file. The viewed-collapse above
+  // unmounts the diff body, so the jump would silently no-op on a collapsed
+  // file; expand it first. GuideSectionCard's companion effect handles the
+  // section-level expand and scroll — this one only reopens the file.
+  const revealTarget = state.guideRevealFile?.path === diffRef.file ? state.guideRevealFile : null;
+  useEffect(() => {
+    if (revealTarget) setCollapsed(false);
+    // Token identifies the reveal event (it increments on every set); path
+    // and handler churn must not re-fire it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealTarget?.token]);
 
   if (!file) {
     return (
@@ -93,7 +113,7 @@ export const GuideDiffSection: React.FC<GuideDiffSectionProps> = ({ diffRef, isF
           diffs render at natural height, tall ones cap and scroll internally). */}
       <div
         key={`${file.path}:${state.reviewBase ?? ''}:${state.activeDiffBase ?? ''}:${state.feedbackDiffContext?.snapshotId ?? ''}`}
-        style={{ height: diffHeight }}
+        style={{ height: collapsed ? undefined : diffHeight }}
         className="rounded-lg border border-border/40 overflow-hidden"
       >
         <DiffViewer
@@ -132,7 +152,9 @@ export const GuideDiffSection: React.FC<GuideDiffSectionProps> = ({ diffRef, isF
           onSelectAnnotation={state.onSelectAnnotation}
           onDeleteAnnotation={state.onDeleteAnnotation}
           isViewed={state.viewedFiles.has(file.path)}
-          onToggleViewed={() => state.onToggleViewed(file.path)}
+          onToggleViewed={handleToggleViewed}
+          collapsed={collapsed}
+          onToggleCollapsed={() => setCollapsed((value) => !value)}
           isStaged={state.stagedFiles.has(file.path)}
           isStaging={state.stagingFile === file.path}
           onStage={() => state.onStage(file.path)}
